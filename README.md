@@ -34,9 +34,9 @@ You can tweak the bot's performance by adjusting `config.py`:
 
 ## 🚀 Deploy the Bot (Google Colab)
 
-1. **Clone the repo:** `!git clone https://github.com/invinciblevenom/save-restricted-content.git`
-2. **Install dependencies:** `!pip install -r /content/save-restricted-content/requirements.txt`
-3. **Get Session String (Login when asked):** `!python3 /content/save-restricted-content/session-string.py`
+1. **Clone the repo:** `!git clone https://github.com/Edgar-Musta/SCRAPPER.git`
+2. **Install dependencies:** `!pip install -r /content/SCRAPPER/requirements.txt`
+3. **Get Session String (Login when asked):** `!python3 /content/SCRAPPER/session-string.py`
 4. **Set Environment Variables:** Add your credentials to Colab Secrets, or run this in a cell:
    ```python
    import os
