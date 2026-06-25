@@ -1,0 +1,4 @@
+Pyrofork
+TgCrypto
+psutil
+python-dotenv
