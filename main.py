@@ -778,4 +778,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     except Exception as e:
+        traceback.print_exc()
         LOGGER(__name__).error(f"Bot Crashed: {e}")
