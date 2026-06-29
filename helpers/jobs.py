@@ -13,18 +13,14 @@ from helpers.utils import processMediaGroup, send_media, get_progress_text
 from helpers.files import get_download_path, fileSizeLimit, get_readable_file_size, get_readable_time, cleanup_download
 from helpers.msg import getChatMsgID, get_file_name, get_parsed_msg, clean_caption, extract_youtube_keyboard, apply_caption_rules
 
+import uuid
+from helpers.utils import progress_for_pyrogram
+
 RUNNING_TASKS = set()
-_job_semaphore: asyncio.Semaphore | None = None
-
-
-def get_job_semaphore() -> asyncio.Semaphore:
-    """Single global lock that serialises the entire download → upload pipeline.
-    The previous file's upload must finish before the next download can begin.
-    The bot is truly idle between jobs."""
-    global _job_semaphore
-    if _job_semaphore is None:
-        _job_semaphore = asyncio.Semaphore(1)
-    return _job_semaphore
+GLOBAL_CURRENT_SIZE = 0
+MAX_GLOBAL_SIZE = 7.5 * 1024**3
+download_condition = asyncio.Condition()
+ACTIVE_TASKS_INFO = {}
 
 def track_task(coro):
     task = asyncio.create_task(coro)
@@ -46,17 +42,15 @@ async def handle_download(bot: Client, user: Client, message: Message, post_url:
         post_url = post_url.split("?", 1)[0]
 
     media_path = None
-    _job_held = False  # tracks whether we hold the global job lock
+    _job_held = False
+    job_id = str(uuid.uuid4())
+    global GLOBAL_CURRENT_SIZE, download_condition, ACTIVE_TASKS_INFO
+    allocated_size = 0
+
+    dl_sem = asyncio.Semaphore(PyroConf.MAX_CONCURRENT_DOWNLOADS)
+    up_sem = asyncio.Semaphore(PyroConf.MAX_CONCURRENT_UPLOADS)
 
     try:
-        # ── Serialise: block until the current job (if any) is fully done ─────
-        # This ensures upload of file N always completes before download of N+1.
-        await get_job_semaphore().acquire()
-        _job_held = True
-
-        dl_sem = asyncio.Semaphore(PyroConf.MAX_CONCURRENT_DOWNLOADS)
-        up_sem = asyncio.Semaphore(PyroConf.MAX_CONCURRENT_UPLOADS)
-
         if pre_fetched_msg:
             chat_message = pre_fetched_msg
             message_id = chat_message.id
@@ -109,22 +103,59 @@ async def handle_download(bot: Client, user: Client, message: Message, post_url:
             pre_file_size = getattr(media_obj, "file_size", 0) if media_obj else 0
             file_size_str = get_readable_file_size(pre_file_size)
 
+            if pre_file_size > 0:
+                async with download_condition:
+                    while GLOBAL_CURRENT_SIZE + pre_file_size > MAX_GLOBAL_SIZE:
+                        if progress_msg:
+                            try:
+                                await progress_msg.edit_text(
+                                    f"⏳ <b>Queue limit reached (7.5GB).</b>\n\n"
+                                    f"Global usage is currently <b>{get_readable_file_size(GLOBAL_CURRENT_SIZE)}</b>.\n"
+                                    f"Your file (<b>{file_size_str}</b>) is waiting in queue."
+                                )
+                            except Exception:
+                                pass
+                        await download_condition.wait()
+                    
+                    GLOBAL_CURRENT_SIZE += pre_file_size
+                    allocated_size = pre_file_size
+                    _job_held = True
+            
+            ACTIVE_TASKS_INFO[job_id] = {
+                "filename": filename,
+                "size": file_size_str,
+                "status": "Starting",
+                "progress": "",
+                "speed": "",
+                "eta": "",
+                "action": "Downloading",
+                "downloaded": "0 B",
+                "percentage": 0,
+                "last_update_time": 0
+            }
+
             async with dl_sem:
                 LOGGER(__name__).info(f"Downloading media: {filename} (Size: {file_size_str})")
                 
                 if progress_msg and batch_stats:
                     batch_stats["processed"] += 1
-                    try: await progress_msg.edit(get_progress_text(filename, file_size_str, batch_stats))
-                    except Exception: pass
                 elif not progress_msg:
                     progress_msg = await message.reply(get_progress_text(filename, file_size_str))
                 
                 try:
-                    media_path = await chat_message.download(file_name=download_path)
+                    media_path = await chat_message.download(
+                        file_name=download_path,
+                        progress=progress_for_pyrogram,
+                        progress_args=("Downloading", progress_msg, time(), job_id, ACTIVE_TASKS_INFO, filename, file_size_str, batch_stats)
+                    )
                 except FloodWait as e:
                     wait_s = int(getattr(e, "value", 0) or 0)
                     await asyncio.sleep(wait_s + 1)
-                    media_path = await chat_message.download(file_name=download_path)
+                    media_path = await chat_message.download(
+                        file_name=download_path,
+                        progress=progress_for_pyrogram,
+                        progress_args=("Downloading", progress_msg, time(), job_id, ACTIVE_TASKS_INFO, filename, file_size_str, batch_stats)
+                    )
                 except FileReferenceExpired:
                     raise
 
@@ -142,7 +173,7 @@ async def handle_download(bot: Client, user: Client, message: Message, post_url:
             
             async with up_sem:
                 upload_success = await send_media(
-                    bot, message, media_path, media_type, parsed_caption, progress_msg, batch_stats, target_chat_id, target_topic_id, reply_markup=safe_keyboard, message_id=message_id
+                    bot, message, media_path, media_type, parsed_caption, progress_msg, batch_stats, target_chat_id, target_topic_id, reply_markup=safe_keyboard, message_id=message_id, job_id=job_id, update_dict=ACTIVE_TASKS_INFO
                 )
 
             if upload_success:
@@ -179,8 +210,11 @@ async def handle_download(bot: Client, user: Client, message: Message, post_url:
             raise e
         await message.reply(f"**❌ {str(e)}**")
     finally:
+        ACTIVE_TASKS_INFO.pop(job_id, None)
         if _job_held:
-            get_job_semaphore().release()  # let the next queued job proceed
+            async with download_condition:
+                GLOBAL_CURRENT_SIZE -= allocated_size
+                download_condition.notify_all()
         if media_path: cleanup_download(media_path)
         elapsed = time() - task_start_time
         if elapsed < 2.0: await asyncio.sleep(2.0 - elapsed)

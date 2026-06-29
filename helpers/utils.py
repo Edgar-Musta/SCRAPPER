@@ -29,7 +29,9 @@ from helpers.msg import (
 )
 from logger import LOGGER
 
-def get_progress_text(filename, file_size="Unknown Size", batch_stats=None, warning=""):
+import math
+
+def get_progress_text(filename, file_size="Unknown Size", batch_stats=None, warning="", action="Processing", progress_bar="", speed="", eta="", downloaded=""):
     if len(filename) > 50:
         name_parts = filename.rsplit('.', 1)
         if len(name_parts) == 2:
@@ -37,35 +39,92 @@ def get_progress_text(filename, file_size="Unknown Size", batch_stats=None, warn
         else:
             filename = f"{filename[:47]}..."
 
-    if not batch_stats:
-        text = (
-            f"<blockquote>📥 <b>Processing</b></blockquote>\n\n"
-            f"├ <b>File:</b> {filename}\n"
-            f"└ <b>Size:</b> {file_size}"
-        )
-        if warning:
-            text += f"\n<blockquote>⚠️ <b>{warning}</b></blockquote>"
-        return text
-
-    current = batch_stats["processed"]
-    total = batch_stats["total"]
-    rem = total - current
-    pct = (current / total) * 100 if total > 0 else 100
-    
     text = (
-        f"<blockquote>📥 <b>Processing</b></blockquote>\n"
+        f"<blockquote>📥 <b>{action}</b></blockquote>\n"
         f"├ <b>File:</b> {filename}\n"
-        f"└ <b>Size:</b> {file_size}\n\n"
-        f"<blockquote>🚀 <b>Batch Progress: {pct:.1f}%</b></blockquote>\n"
-        f"├ 📊 <b>Total Links:</b> {total}\n"
-        f"├ ⚡ <b>Current:</b> {current}\n"
-        f"└ ⏳ <b>Remaining:</b> {rem}"
     )
+    if downloaded:
+        text += f"├ <b>Size:</b> {downloaded} / {file_size}\n"
+    else:
+        text += f"├ <b>Size:</b> {file_size}\n"
+
+    if progress_bar:
+        text += f"├ <b>Progress:</b>\n<code>{progress_bar}</code>\n"
+        text += f"├ <b>Speed:</b> {speed}\n"
+        text += f"└ <b>ETA:</b> {eta}\n"
+    else:
+        text += f"└ <b>Status:</b> Starting...\n"
+
+    if batch_stats:
+        current = batch_stats["processed"]
+        total = batch_stats["total"]
+        rem = total - current
+        pct = (current / total) * 100 if total > 0 else 100
+        text += (
+            f"\n<blockquote>🚀 <b>Batch Progress: {pct:.1f}%</b></blockquote>\n"
+            f"├ 📊 <b>Total Links:</b> {total}\n"
+            f"├ ⚡ <b>Current:</b> {current}\n"
+            f"└ ⏳ <b>Remaining:</b> {rem}"
+        )
     
     if warning:
         text += f"\n<blockquote>⚠️ <b>{warning}</b></blockquote>"
         
     return text
+
+async def progress_for_pyrogram(current, total, ud_type, message, start, job_id, update_dict, filename, file_size_str, batch_stats):
+    now = time()
+    diff = now - start
+    
+    # Update dictionary to maintain global stats
+    percentage = current * 100 / total if total > 0 else 0
+    speed = current / diff if diff > 0 else 0
+    eta = round((total - current) / speed) if speed > 0 else 0
+    
+    progress_str = "[{0}{1}] {2}%".format(
+        ''.join(["█" for _ in range(math.floor(percentage / 5))]),
+        ''.join(["░" for _ in range(20 - math.floor(percentage / 5))]),
+        round(percentage, 2)
+    )
+    
+    speed_str = get_readable_file_size(speed) + "/s"
+    eta_str = get_readable_time(eta)
+    downloaded_str = get_readable_file_size(current)
+    
+    if update_dict is not None and job_id in update_dict:
+        update_dict[job_id].update({
+            "progress": progress_str,
+            "speed": speed_str,
+            "eta": eta_str,
+            "action": ud_type,
+            "downloaded": downloaded_str,
+            "percentage": round(percentage, 1),
+            "status": "processing"
+        })
+
+    # Update telegram message every 3 seconds or on completion
+    # Store last updated time in the message object or update_dict
+    last_update_time = update_dict[job_id].get("last_update_time", 0) if update_dict and job_id in update_dict else 0
+    if now - last_update_time >= 3.0 or current == total:
+        if update_dict and job_id in update_dict:
+            update_dict[job_id]["last_update_time"] = now
+            
+        if message:
+            try:
+                await message.edit_text(
+                    get_progress_text(
+                        filename, 
+                        file_size_str, 
+                        batch_stats, 
+                        action=ud_type, 
+                        progress_bar=progress_str, 
+                        speed=speed_str, 
+                        eta=eta_str, 
+                        downloaded=downloaded_str
+                    )
+                )
+            except Exception:
+                pass
 
 async def cmd_exec(cmd, shell=False):
     if shell:
@@ -164,7 +223,7 @@ async def get_video_thumbnail(video_file, duration, message_id=None):
     return output
 
 async def send_media(
-    bot, message, media_path, media_type, caption, progress_msg=None, batch_stats=None, target_chat_id=None, target_topic_id=None, reply_markup=None, message_id=None
+    bot, message, media_path, media_type, caption, progress_msg=None, batch_stats=None, target_chat_id=None, target_topic_id=None, reply_markup=None, message_id=None, job_id=None, update_dict=None
 ):
     if target_chat_id is None:
         target_chat_id = message.chat.id
@@ -184,13 +243,17 @@ async def send_media(
     LOGGER(__name__).info(f"Uploading media: {filename} (Size: {file_size_str})")
 
     async def _send_once():
+        prog_args = ("Uploading", progress_msg, time(), job_id, update_dict, filename, file_size_str, batch_stats) if job_id else ()
+        
         if media_type == "photo":
             await bot.send_photo(
                 chat_id=target_chat_id,
                 photo=media_path,
                 caption=caption or "",
                 reply_markup=reply_markup,
-                reply_to_message_id=target_topic_id
+                reply_to_message_id=target_topic_id,
+                progress=progress_for_pyrogram if job_id else None,
+                progress_args=prog_args
             )
         elif media_type == "video":
             duration, _, _, width, height = await get_media_info(media_path)
@@ -207,7 +270,9 @@ async def send_media(
                 caption=caption or "",
                 supports_streaming=True,
                 reply_markup=reply_markup,
-                reply_to_message_id=target_topic_id
+                reply_to_message_id=target_topic_id,
+                progress=progress_for_pyrogram if job_id else None,
+                progress_args=prog_args
             )
             if thumb and os.path.exists(thumb):
                 try:
@@ -224,7 +289,9 @@ async def send_media(
                 title=title,
                 caption=caption or "",
                 reply_markup=reply_markup,
-                reply_to_message_id=target_topic_id
+                reply_to_message_id=target_topic_id,
+                progress=progress_for_pyrogram if job_id else None,
+                progress_args=prog_args
             )
         elif media_type == "document":
             await bot.send_document(
@@ -232,7 +299,9 @@ async def send_media(
                 document=media_path,
                 caption=caption or "",
                 reply_markup=reply_markup,
-                reply_to_message_id=target_topic_id
+                reply_to_message_id=target_topic_id,
+                progress=progress_for_pyrogram if job_id else None,
+                progress_args=prog_args
             )
 
     max_retries = 3

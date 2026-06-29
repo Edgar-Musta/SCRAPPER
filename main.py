@@ -16,7 +16,8 @@ from logger import LOGGER
 
 from helpers.files import get_readable_file_size, get_readable_time
 from helpers.msg import getChatMsgID, get_parsed_msg, apply_caption_rules, is_private_link
-from helpers.jobs import execute_batch, execute_autoforward, handle_download, track_task, get_running_tasks
+from helpers.jobs import execute_batch, execute_autoforward, handle_download, track_task, get_running_tasks, ACTIVE_TASKS_INFO
+import helpers.jobs as jobs
 from helpers.keyboards import get_start_keyboard, get_caption_keyboard, get_filter_keyboard
 from helpers.lifecycle import load_expiry, save_expiry, get_days_remaining, format_expiry, lifecycle_checker
 from helpers.auth import (
@@ -416,7 +417,7 @@ async def caption_rule_callback(bot: Client, callback_query: CallbackQuery):
 # ─── Main message handler ─────────────────────────────────────────────────────
 
 @bot.on_message(filters.private & filters.text & ~filters.command(
-    ["start", "help", "stats", "logs", "stop", "autoforward", "batch", "login", "logout", "cancel",
+    ["start", "help", "stats", "logs", "stop", "tasks", "autoforward", "batch", "login", "logout", "cancel",
      "setexpiry", "lifecycle"]
 ))
 async def handle_any_message(bot: Client, message: Message):
@@ -712,6 +713,36 @@ async def stats(_, message: Message):
         f"<b>System:</b> CPU: {cpuUsage}% | RAM: {memory}% | DISK: {disk}%",
         parse_mode=ParseMode.HTML,
     )
+
+
+@bot.on_message(filters.command("tasks") & filters.private)
+async def tasks_command(_, message: Message):
+    global_size_str = get_readable_file_size(jobs.GLOBAL_CURRENT_SIZE)
+    max_size_str = get_readable_file_size(jobs.MAX_GLOBAL_SIZE)
+    
+    pct = (jobs.GLOBAL_CURRENT_SIZE / jobs.MAX_GLOBAL_SIZE) * 100 if jobs.MAX_GLOBAL_SIZE else 0
+    
+    text = (
+        f"📊 <b>Global Download Stats</b>\n"
+        f"├ <b>Usage:</b> {global_size_str} / {max_size_str} ({pct:.1f}%)\n"
+        f"└ <b>Active Processes:</b> {len(ACTIVE_TASKS_INFO)}\n\n"
+    )
+    
+    if not ACTIVE_TASKS_INFO:
+        text += "<i>No active or queued tasks.</i>"
+    else:
+        for idx, (job_id, info) in enumerate(ACTIVE_TASKS_INFO.items(), start=1):
+            text += (
+                f"<b>{idx}. {info['filename']}</b>\n"
+                f"├ Action: {info['action']}\n"
+                f"├ Status: {info['percentage']}%\n"
+                f"└ Size: {info['downloaded']} / {info['size']}\n\n"
+            )
+            if idx >= 10:
+                text += f"<i>...and {len(ACTIVE_TASKS_INFO) - 10} more.</i>"
+                break
+                
+    await message.reply(text, parse_mode=ParseMode.HTML)
 
 
 @bot.on_message(filters.command("logs") & filters.private)
