@@ -1,5 +1,6 @@
 from os import getenv
 from time import time
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,7 +11,10 @@ class PyroConf(object):
     BOT_TOKEN = getenv("BOT_TOKEN")
     SESSION_STRING = getenv("SESSION_STRING")
     
-    OWNER_ID = int(getenv("OWNER_ID", "0"))
+    # Comma-separated list of owner Telegram user IDs, e.g. "123456,789012"
+    OWNER_IDS = [
+        int(x.strip()) for x in getenv("OWNER_IDS", "").split(",") if x.strip().isdigit()
+    ]
 
     BOT_START_TIME = time()
     MAX_CONCURRENT_DOWNLOADS = int(getenv("MAX_CONCURRENT_DOWNLOADS", "1"))

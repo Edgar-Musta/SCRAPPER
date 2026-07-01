@@ -617,7 +617,7 @@ async def handle_any_message(bot: Client, message: Message):
 
 @bot.on_message(filters.command("setexpiry") & filters.private)
 async def set_expiry_command(_, message: Message):
-    if message.from_user.id != PyroConf.OWNER_ID:
+    if message.from_user.id not in PyroConf.OWNER_IDS:
         return await message.reply("❌ This command is restricted to the bot owner.")
 
     args = message.text.split()
@@ -653,7 +653,7 @@ async def set_expiry_command(_, message: Message):
 
 @bot.on_message(filters.command("lifecycle") & filters.private)
 async def lifecycle_status_command(_, message: Message):
-    if message.from_user.id != PyroConf.OWNER_ID:
+    if message.from_user.id not in PyroConf.OWNER_IDS:
         return await message.reply("❌ This command is restricted to the bot owner.")
 
     expiry_str = load_expiry()
@@ -786,8 +786,8 @@ async def run():
             LOGGER(__name__).warning(f"Global user session failed to start: {e}")
 
     # Start lifecycle reminder if an owner is configured
-    if PyroConf.OWNER_ID:
-        asyncio.create_task(lifecycle_checker(bot, PyroConf.OWNER_ID))
+    if PyroConf.OWNER_IDS:
+        asyncio.create_task(lifecycle_checker(bot, PyroConf.OWNER_IDS))
         LOGGER(__name__).info("Lifecycle checker started.")
 
     try:

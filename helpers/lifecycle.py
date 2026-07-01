@@ -48,44 +48,53 @@ def format_expiry(date_str: str) -> str:
 
 # ─── Background checker ───────────────────────────────────────────────────────
 
-async def lifecycle_checker(bot, owner_id: int):
+async def lifecycle_checker(bot, owner_ids: list[int]):
     """
     Runs as a background task.
     Waits 10 s after startup so the bot is fully ready, then checks once every
-    24 hours. Sends a DM to the owner when ≤5 days remain (or already expired).
+    24 hours. Sends a DM to every owner when ≤5 days remain (or already expired).
     """
     await asyncio.sleep(10)  # let the bot fully start before first check
 
     while True:
         try:
             expiry_str = load_expiry()
-            if expiry_str and owner_id:
+            if expiry_str and owner_ids:
                 days_left = get_days_remaining(expiry_str)
                 formatted  = format_expiry(expiry_str)
 
                 if days_left is not None and days_left < 0:
-                    await bot.send_message(
-                        owner_id,
-                        "🚨 <b>Server Lifecycle — EXPIRED</b>\n\n"
-                        f"Your subscription expired on <b>{formatted}</b>.\n"
-                        "Please renew immediately to avoid downtime.\n\n"
-                        "Once renewed, update the date:\n"
-                        "<code>/setexpiry YYYY-MM-DD</code>",
-                        parse_mode=ParseMode.HTML,
-                    )
+                    for oid in owner_ids:
+                        try:
+                            await bot.send_message(
+                                oid,
+                                "🚨 <b>Server Lifecycle — EXPIRED</b>\n\n"
+                                f"Your subscription expired on <b>{formatted}</b>.\n"
+                                "Please renew immediately to avoid downtime.\n\n"
+                                "Once renewed, update the date:\n"
+                                "<code>/setexpiry YYYY-MM-DD</code>",
+                                parse_mode=ParseMode.HTML,
+                            )
+                        except Exception as e:
+                            LOGGER(__name__).error(f"Lifecycle msg to {oid} failed: {e}")
 
                 elif days_left is not None and days_left <= 5:
                     day_word = "day" if days_left == 1 else "days"
-                    await bot.send_message(
-                        owner_id,
-                        "⚠️ <b>Server Lifecycle Reminder</b>\n\n"
-                        f"Your subscription expires in <b>{days_left} {day_word}</b>.\n"
-                        f"📅 Expiry date: <b>{formatted}</b>\n\n"
-                        "Renew soon to keep the bot running without interruption.",
-                        parse_mode=ParseMode.HTML,
-                    )
+                    for oid in owner_ids:
+                        try:
+                            await bot.send_message(
+                                oid,
+                                "⚠️ <b>Server Lifecycle Reminder</b>\n\n"
+                                f"Your subscription expires in <b>{days_left} {day_word}</b>.\n"
+                                f"📅 Expiry date: <b>{formatted}</b>\n\n"
+                                "Renew soon to keep the bot running without interruption.",
+                                parse_mode=ParseMode.HTML,
+                            )
+                        except Exception as e:
+                            LOGGER(__name__).error(f"Lifecycle msg to {oid} failed: {e}")
 
         except Exception as e:
             LOGGER(__name__).error(f"Lifecycle checker error: {e}")
 
         await asyncio.sleep(CHECK_INTERVAL)
+
